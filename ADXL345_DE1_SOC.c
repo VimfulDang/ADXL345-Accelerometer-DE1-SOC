@@ -48,7 +48,7 @@ void catchSIGINT (int signum) {
 int main(void) {
 
 	uint8_t devid = 0;
-	int16_t mg_per_lsb = 3.2;
+	float mg_per_lsb = 3.2;
 	int16_t XYZ[3];
 	stop = 0;
 
