@@ -57,7 +57,7 @@ static struct file_operations accel_fops = {
 };
 
 /* Module Variables */
-static volatile int * I2C0_ptr, * SYSMGR_ptr;
+static volatile int * I2C0_ptr, * SYSMGR_ptr, *LEDR_ptr, * LW_virtual;
 static u8 devid;
 static u8 mg_per_lsb = 3;
 static u16 XYZ[3];
@@ -92,6 +92,10 @@ static int __init init_accel(void) {
 	printk("Initializing Accelerometer\n");
 	I2C0_ptr = ioremap_nocache(I2C0_BASE, I2C0_SPAN);
 	SYSMGR_ptr = ioremap_nocache(SYSMGR_BASE, SYSMGR_SPAN);
+	LW_virtual = ioremap_nocache(LW_BRIDGE_BASE, LW_BRIDGE_SPAN);
+
+	LEDR_ptr = LW_virtual + LEDR_BASE;
+	*LEDR_ptr = 0;
 
 	if ((I2C0_ptr == 0) || (SYSMGR_ptr == NULL)) 
 		printk (KERN_ERR "Error: ioremap_nocache returned NULL\n");
@@ -108,7 +112,8 @@ static int __init init_accel(void) {
 }
 
 static void __exit stop_accel(void) {
-
+	*LEDR_ptr = 0;
+	iounmap(LW_virtual);
 	iounmap(I2C0_ptr);
 	iounmap (SYSMGR_ptr);
 	device_destroy(accel_class, accel_no);
@@ -378,12 +383,20 @@ void ADXL345_Init(void) {
 	ADXL345_REG_WRITE(ADXL345_DATA_FORMAT, data_format);
 	ADXL345_REG_WRITE(ADXL345_BW_RATE, bw_rate);
 
-	//Using threshold for new data
-	ADXL345_REG_WRITE(ADXL345_THRESH_ACT, 0x04);
-	ADXL345_REG_WRITE(ADXL345_THRESH_INACT, 0x02);
-	ADXL345_REG_WRITE(ADXL345_TIME_INACT, 0x02);
-	ADXL345_REG_WRITE(ADXL345_ACT_INACT_CTL, 0xFF);
-	ADXL345_REG_WRITE(ADXL345_INT_ENABLE, 0x18);
+	//Set threshold for new data
+	ADXL345_REG_WRITE(ADXL345_THRESH_ACT, 0x04); //62.5 mg per LSB, 250 mg
+	ADXL345_REG_WRITE(ADXL345_THRESH_INACT, 0x02); //62.5 mg per LSB, 125 mg
+	ADXL345_REG_WRITE(ADXL345_TIME_INACT, 0x02); //1s per LSB, 2s
+	ADXL345_REG_WRITE(ADXL345_ACT_INACT_CTL, 0xFF); //
+
+	//Set single & double tap
+	ADXL345_REG_WRITE(ADXL345_THRESH_TAP, 0x10); // 65 mg per LSB, 1g
+	ADXL345_REG_WRITE(ADXL345_TAP_DUR, 0x20); // 62.5us per LSB, 20ms
+	ADXL345_REG_WRITE(ADXL345_TAP_LAT, 0x10); // 1.25ms per LSB, 20ms
+	ADXL345_REG_WRITE(ADXL345_DOUBLE_WIND, 0xF0); // 1.25ms per LSB, 300ms
+	ADXL345_REG_WRITE(ADXL345_TAP_EN, 0x2); // Only for Y
+	//Interrupt 0|Single_tap|Double_tap|Activity|Inactivity|0|0|0
+	ADXL345_REG_WRITE(ADXL345_INT_ENABLE, 0x78);
 
 	//Reset Measurement config
 	ADXL345_REG_WRITE(ADXL345_POWER_CTL, 0x00); //standby
@@ -462,7 +475,21 @@ static int ADXL345_IsDataReady(void) {
 	u8 data8;
 
 	ADXL345_REG_READ(ADXL345_INT_SOURCE, &data8);
-	if ((data8 & ADXL345_ACTIVITY) | calibrate) {
+	printk("%#x\n", data8);
+	if ((data8 & (ADXL345_DOUBLE | ADXL345_SINGLE)) | calibrate) {
+		if (data8 & ADXL345_DOUBLE) {
+			printk("Double Tap\n");
+			*LEDR_ptr ^= 0x2;
+		}
+		else if (data8 & ADXL345_SINGLE) {
+			*LEDR_ptr ^= 0x1;
+			printk("Single Tap\n");
+		}
+		else {
+			*LEDR_ptr = 0x3;
+			msleep(50);
+			*LEDR_ptr = 0;
+		}
 		ADXL345_REG_READ(ADXL345_INT_SOURCE, &data8);
 		if (data8 & ADXL345_DATAREADY) {
 			bReady = 1;
@@ -478,6 +505,7 @@ static void ADXL345_XYZ_Read(s16 szData16[3]) {
 	szData16[0] = (szData8[1] << 8) | szData8[0];
 	szData16[1] = (szData8[3] << 8) | szData8[2];
 	szData16[2] = (szData8[5] << 8) | szData8[4];
+	printk("X:%d, Y:%d, Z:%d\n", szData16[0], szData16[1], szData16[2]);
 }
 
 
